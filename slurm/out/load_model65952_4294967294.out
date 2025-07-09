@@ -1,0 +1,9 @@
+Using device: cuda
+Loading LLaDA model...
+Loading tokenizer...
+Model and tokenizer loaded successfully!
+Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+Lily can run 12 kilometers per hour for 4 hours. After

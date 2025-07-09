@@ -1,0 +1,2 @@
+/data/sls/scratch/mvideet/anaconda3/envs/diffusion_env/lib/python3.10/site-packages/sklearn/manifold/_t_sne.py:1164: FutureWarning: 'n_iter' was renamed to 'max_iter' in version 1.5 and will be removed in 1.7.
+  warnings.warn(

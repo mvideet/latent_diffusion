@@ -1,0 +1,21 @@
+Using device: cuda
+Loading logits...
+Loaded 128 logits tensors
+Flattening tensors...
+Feature shape: torch.Size([166, 126464])
+Computing CKA similarities...
+Processing step 0/127
+Processing step 10/127
+Processing step 20/127
+Processing step 30/127
+Processing step 40/127
+Processing step 50/127
+Processing step 60/127
+Processing step 70/127
+Processing step 80/127
+Processing step 90/127
+Processing step 100/127
+Processing step 110/127
+Processing step 120/127
+Computed 127 CKA scores
+Saved plot as 'cka_similarity.png'

@@ -1,0 +1,39 @@
+Using device: cuda
+Loading logits...
+Loaded 128 logits tensors
+Logits shape per step: torch.Size([1, 166, 126464])
+Flattening tensors for CKA...
+Feature shape: torch.Size([166, 126464])
+Computing CKA similarities...
+Processing CKA step 0/127
+Processing CKA step 10/127
+Processing CKA step 20/127
+Processing CKA step 30/127
+Processing CKA step 40/127
+Processing CKA step 50/127
+Processing CKA step 60/127
+Processing CKA step 70/127
+Processing CKA step 80/127
+Processing CKA step 90/127
+Processing CKA step 100/127
+Processing CKA step 110/127
+Processing CKA step 120/127
+Computed 127 CKA scores
+Computing KL divergences...
+Processing KL step 0/127
+Processing KL step 10/127
+Processing KL step 20/127
+Processing KL step 30/127
+Processing KL step 40/127
+Processing KL step 50/127
+Processing KL step 60/127
+Processing KL step 70/127
+Processing KL step 80/127
+Processing KL step 90/127
+Processing KL step 100/127
+Processing KL step 110/127
+Processing KL step 120/127
+Computed 127 KL divergence scores
+Saved combined plot as 'diffusion_analysis.png'
+Saved CKA plot as 'cka_similarity.png'
+Saved KL plot as 'kl_divergence.png'
