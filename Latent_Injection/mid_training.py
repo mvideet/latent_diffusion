@@ -383,7 +383,7 @@ def run_mid_training():
     # Example training loop
     print("Starting mid-training with latent injection...")
     
-    for step in range(10000):  # Your 180B token training
+    for step in range(10000):  # 10K steps
         # Your data loading logic here
         # For example:
         batch = {
