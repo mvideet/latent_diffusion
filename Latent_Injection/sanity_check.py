@@ -98,8 +98,19 @@ def test_forward_process():
     print(f"✓ Forward process test passed!")
     print(f"  Input shape: {input_ids.shape}")
     print(f"  Masked tokens: {num_masked}/{input_ids.numel()} ({100*num_masked/input_ids.numel():.1f}%)")
-    
+    # print(f"  P mask: {p_mask}")
+    # print(f"  Noisy batch: {noisy_batch}")
+    # print(f"  Masked indices: {masked_indices}")
     return noisy_batch, masked_indices, p_mask
+
+def get_sample_questions():
+    """Get realistic sample questions for testing"""
+    return [
+        "What is the solution to the equation 2x + 5 = 17? Show your work step by step.",
+        "A train leaves New York at 9:00 AM traveling at 120 mph. Another train leaves Boston at 10:00 AM traveling at 150 mph toward New York. If the distance between the cities is 220 miles, at what time will they meet?",
+        "Explain the process of photosynthesis and why it's important for life on Earth. Include the chemical equation.",
+        "A company's revenue increased from $2.5 million to $3.2 million over two years. What was the percentage increase? If this growth rate continues, what will the revenue be after one more year?"
+    ]
 
 def test_reasoning_latent_generator():
     """Test the ReasoningLatentGenerator component"""
@@ -107,20 +118,36 @@ def test_reasoning_latent_generator():
     print("Testing ReasoningLatentGenerator...")
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Using device: {device}")
     latent_dim = 256
-    batch_size = 2
-    seq_len = 64
     
     try:
         # Create generator (this will try to load models)
         generator = ReasoningLatentGenerator(
-            thinker_path="./thinker",
+            thinker_path="/data/sls/u/urop/mvideet/diffusion_reasoning/thinker",
             latent_dim=latent_dim,
             device=device
         )
         
-        # Create dummy input
-        input_ids = torch.randint(0, 50000, (batch_size, seq_len), device=device)
+        # Get sample questions
+        sample_questions = get_sample_questions()
+        batch_size = len(sample_questions)
+        
+        print(f"Using {batch_size} sample questions:")
+        for i, q in enumerate(sample_questions):
+            print(f"  {i+1}. {q[:80]}{'...' if len(q) > 80 else ''}")
+        
+        # Tokenize questions using LLaDA tokenizer
+        tokenized = generator.llada_tokenizer(
+            sample_questions,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=512
+        )
+        input_ids = tokenized.input_ids.to(device)
+        
+        print(f"Tokenized input shape: {input_ids.shape}")
         
         # Test latent generation
         latents = generator.generate_latents(
@@ -135,40 +162,70 @@ def test_reasoning_latent_generator():
         
         print(f"✓ ReasoningLatentGenerator test passed! Output shape: {latents.shape}")
         
-        # Test prompt generation
-        contexts = ["This is a test context for reasoning."] * batch_size
-        prompts = generator.generate_reasoning_prompts(contexts, strategy="summary")
+        # Test prompt generation with actual contexts
+        prompts = generator.generate_reasoning_prompts(sample_questions, strategy="summary")
         
         assert len(prompts) == batch_size, "Number of prompts doesn't match batch size"
         assert all(isinstance(p, str) for p in prompts), "All prompts should be strings"
         assert all(len(p) > 0 for p in prompts), "All prompts should be non-empty"
         
         print(f"✓ Prompt generation test passed! Generated {len(prompts)} prompts")
+        print(f"  Sample reasoning prompt (first 150 chars):")
+        # Print the first 150 characters of the first generated reasoning prompt as an example
+        print(f"  {prompts[0][:150]}...")
         
         return generator
         
     except Exception as e:
+        print(e)
         print(f"⚠ ReasoningLatentGenerator test failed: {e}")
         print("  This might be due to missing model files. Continuing with other tests...")
         return None
+    finally:
+        # Clean up GPU memory after test
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            # Force garbage collection
+            import gc
+            gc.collect()
+            print(f"🧹 Cleaned GPU cache and garbage collected. GPU memory in use: {torch.cuda.memory_allocated()/1024**3:.2f} GB")
 
 def test_film_model():
     """Test the FiLM-enabled LLaDA model"""
     print("=" * 50)
     print("Testing FiLM-enabled LLaDA model...")
     
+    # Check available GPU memory and fallback to CPU if needed
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if torch.cuda.is_available():
+        free_memory_gb = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / 1024**3
+        print(f"Free GPU memory: {free_memory_gb:.2f} GB")
+        if free_memory_gb < 2.0:  # Need at least 2GB free
+            print("⚠️ Insufficient GPU memory, falling back to CPU for FiLM test")
+            device = 'cpu'
+    
     latent_dim = 256
-    batch_size = 2
-    seq_len = 64
+    batch_size = 1  # Reduce batch size for memory efficiency
+    seq_len = 64   # Further reduce sequence length
+    
+    # Clear GPU cache before testing
+    if device == 'cuda':
+        torch.cuda.empty_cache()
+        print(f"GPU memory before loading: {torch.cuda.memory_allocated()/1024**3:.2f} GB")
     
     try:
         # Load model
-        model = load_film_model("./llada-8b", latent_dim, device)
+        model = load_film_model("/data/sls/u/urop/mvideet/diffusion_reasoning/llada_8b", latent_dim, device)
         
-        # Create dummy inputs
+        if torch.cuda.is_available():
+            print(f"GPU memory after loading model: {torch.cuda.memory_allocated()/1024**3:.2f} GB")
+        
+        # Create dummy inputs (model expects bfloat16 now but latents should be float32)
         input_ids = torch.randint(0, 50000, (batch_size, seq_len), device=device)
-        latents = torch.randn(batch_size, latent_dim, device=device)
+        latents = torch.randn(batch_size, latent_dim, device=device, dtype=torch.float32)
+        
+        print(f"Testing with input_ids: {input_ids.shape}, {input_ids.dtype}")
+        print(f"Testing with latents: {latents.shape}, {latents.dtype}")
         
         # Forward pass
         outputs = model(input_ids=input_ids, latent=latents)
@@ -192,6 +249,11 @@ def test_film_model():
         print(f"⚠ FiLM model test failed: {e}")
         print("  This might be due to missing model files. Continuing with other tests...")
         return None
+    finally:
+        # Clean up GPU memory after test
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            print(f"🧹 Cleaned GPU cache after FiLM test")
 
 def test_full_pipeline():
     """Test the complete training pipeline"""
@@ -203,16 +265,31 @@ def test_full_pipeline():
     try:
         # Initialize pipeline
         pipeline = MidTrainingPipeline(
-            llada_path="./llada-8b",
-            thinker_path="./thinker",
+            llada_path="/data/sls/u/urop/mvideet/diffusion_reasoning/llada_8b",
+            thinker_path="/data/sls/u/urop/mvideet/diffusion_reasoning/thinker",
             latent_dim=256,
             device=device
         )
         
-        # Create dummy batch
+        # Get sample questions and tokenize them
+        sample_questions = get_sample_questions()
+        print(f"Testing with {len(sample_questions)} sample questions")
+        
+        # Tokenize using the LLaDA tokenizer from the pipeline
+        tokenized = pipeline.latent_generator.llada_tokenizer(
+            sample_questions,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=256
+        )
+        
+        # Create batch
         batch = {
-            "input_ids": torch.randint(0, 50000, (2, 128)).to(device)
+            "input_ids": tokenized.input_ids.to(device)
         }
+        
+        print(f"Input batch shape: {batch['input_ids'].shape}")
         
         # Run training step
         metrics = pipeline.training_step(batch)
@@ -230,6 +307,7 @@ def test_full_pipeline():
         print(f"  Loss: {metrics['loss']:.4f}")
         print(f"  Masked tokens: {metrics['masked_tokens']}")
         print(f"  Total tokens: {metrics['total_tokens']}")
+        print(f"  Masking rate: {100*metrics['masked_tokens']/metrics['total_tokens']:.1f}%")
         
         return pipeline
         
@@ -248,22 +326,34 @@ def test_gradient_flow():
     try:
         # Initialize pipeline
         pipeline = MidTrainingPipeline(
-            llada_path="./llada-8b",
-            thinker_path="./thinker",
+            llada_path="/data/sls/u/urop/mvideet/diffusion_reasoning/llada_8b",
+            thinker_path="/data/sls/u/urop/mvideet/diffusion_reasoning/thinker",
             latent_dim=256,
             device=device
         )
         
-        # Create dummy batch
+        # Get sample questions (use first 2 for speed)
+        sample_questions = get_sample_questions()[:2]
+        
+        # Tokenize questions
+        tokenized = pipeline.latent_generator.llada_tokenizer(
+            sample_questions,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=128
+        )
+        
+        # Create batch
         batch = {
-            "input_ids": torch.randint(0, 50000, (2, 64)).to(device)
+            "input_ids": tokenized.input_ids.to(device)
         }
         
         # Run training step
         metrics = pipeline.training_step(batch)
         
         # Check that gradients exist for trainable parameters
-        film_params = [p for p in pipeline.llada_model.parameters() if 'film_' in p.name]
+        film_params = [p for name, p in pipeline.llada_model.named_parameters() if 'film_' in name]
         latent_params = list(pipeline.latent_generator.latent_encoder.parameters())
         
         # Check FiLM parameters
@@ -286,13 +376,34 @@ def run_all_sanity_checks():
     print("🧪 Starting sanity checks for latent injection training pipeline...")
     print(f"Device: {'cuda' if torch.cuda.is_available() else 'cpu'}")
     
+    # Set memory management for better GPU memory handling
+    import os
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    
+    if torch.cuda.is_available():
+        total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        print(f"Total GPU memory: {total_memory:.2f} GB")
+        torch.cuda.empty_cache()
+    
     # Set seed for reproducibility
     set_seed(42)
     
     # Run individual component tests
     test_latent_encoder()
     test_forward_process()
+    
+    # Clean memory before heavy tests
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print(f"🧹 GPU cache cleaned before heavy tests")
+    
     test_reasoning_latent_generator()
+    
+    # Clean memory before FiLM test
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print(f"🧹 GPU cache cleaned before FiLM test")
+    
     test_film_model()
     
     # Run full pipeline test

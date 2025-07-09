@@ -61,6 +61,9 @@ class FiLMAdapter(nn.Module):
         """
         batch_size = x.size(0)
         
+        # Convert latent to match x dtype for mixed precision compatibility
+        latent = latent.to(x.dtype)
+        
         # Generate gamma and beta from latent
         film_params = self.film_generator(latent)  # [batch, feature_dim * 2]
         gamma, beta = film_params.chunk(2, dim=-1)  # Each [batch, feature_dim]
@@ -690,5 +693,6 @@ def load_film_model(base_model_path: str, latent_dim: int, device: str = 'cuda')
     # Load the updated state dict into the FiLM model
     film_model.load_state_dict(film_state_dict, strict=True)
 
-    # Move the model to the specified device and set to eval mode
-    return film_model.to(torch.device(device)).eval()
+    # Move the model to the specified device, convert to bfloat16 for memory efficiency, and set to eval mode
+    print("Converting model to bfloat16 and moving to device...")
+    return film_model.to(torch.device(device)).to(torch.bfloat16).eval()

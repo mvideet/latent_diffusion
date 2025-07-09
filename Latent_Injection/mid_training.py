@@ -51,7 +51,7 @@ class ReasoningLatentGenerator:
         print("Loading thinker model...")
         self.thinker_model = AutoModel.from_pretrained(
             thinker_path,
-            torch_dtype=torch.float16,
+            torch_dtype=torch.bfloat16,
             trust_remote_code=True
         ).to(device).eval()
         
@@ -59,105 +59,54 @@ class ReasoningLatentGenerator:
         if self.thinker_tokenizer.pad_token is None:
             self.thinker_tokenizer.pad_token = self.thinker_tokenizer.eos_token
             
-        # Initialize latent encoder
+        # Initialize latent encoder (match thinker model dtype)
         self.latent_encoder = LatentEncoder(
             thinker_hidden_size=2560,  # Phi-2 hidden size
             latent_dim=latent_dim
-        ).to(device)
+        ).to(device).to(torch.bfloat16)  # Convert to match thinker model dtype
+        
+        # DEBUG: Print model dtypes after initialization
+        print(f"🔍 DEBUG - Thinker model dtype: {next(self.thinker_model.parameters()).dtype}")
+        print(f"🔍 DEBUG - Latent encoder dtype: {next(self.latent_encoder.parameters()).dtype}")
         
         # Load LLaDA tokenizer for context preparation
-        self.llada_tokenizer = AutoTokenizer.from_pretrained("./llada-8b", trust_remote_code=True)
+        self.llada_tokenizer = AutoTokenizer.from_pretrained("/data/sls/u/urop/mvideet/diffusion_reasoning/llada_8b", trust_remote_code=True)
         
-        # Define reasoning styles and frames
-        self.thinker_styles = {
-            "summary": (
-                "Briefly summarise the big picture and the very next operation "
-                "the writer should perform."
-            ),
-            "cot": (
-                "Think step-by-step, writing each sub-goal as an imperative "
-                "clause separated by semicolons."
-            ),
-            "hint": (
-                "Write 1-3 short hints that would unblock a stuck student."
-            ),
-        }
-
-        # Extra "frames" keep the surface form diverse while the substance is similar.
-        self.rhetorical_frames = [
-            "As an expert problem-solver:",
-            "Internal planning note:",
-            "Self-checklist:",
-        ]
-
-    def generate_reasoning_prompts(
-            self,
-            contexts: List[str],
-            *,
-            strategy: str = "mixed",
-            cycle_idx: Optional[int] = None,
-            total_cycles: Optional[int] = None,
-            max_context_chars: int = 400,
-    ) -> List[str]:
+    def generate_reasoning_prompts(self, contexts: List[str], strategy: str = "mixed") -> List[str]:
         """
-        Build prompts for the thinker LLM that will later be compressed into latents.
-
-        Args
-        ----
-        contexts:          List of full context strings (prompt + current partial answer).
-        strategy:          'summary' | 'cot' | 'hint' | 'mixed'
-        cycle_idx:         Which think→write cycle we’re in (0-based).  Optional.
-        total_cycles:      Total number of cycles planned.              Optional.
-        max_context_chars: Truncate context so the thinker sees only the
-                        recent portion (prevents leaking solutions).
-
-        Returns
-        -------
-        List[str] – same length as `contexts`.
+        Generate reasoning prompts for the thinker model
         """
-
         prompts = []
-        for ctx in contexts:
-            # 1) choose strategy
-            chosen = (
-                strategy
-                if strategy != "mixed"
-                else random.choice(list(self.thinker_styles.keys()))
-            )
-            guidance = self.thinker_styles[chosen]
-
-            # 2) choose rhetorical frame
-            frame = random.choice(self.rhetorical_frames)
-
-            # 3) optional cycle annotation
-            if cycle_idx is not None and total_cycles is not None:
-                cycle_tag = f"(cycle {cycle_idx + 1}/{total_cycles})"
+        
+        for context in contexts:
+            if strategy == "summary":
+                prompt = f"Summarize the key ideas and next logical steps for: {context[:500]}...\nSummary:"
+            elif strategy == "cot":
+                prompt = f"Think step by step about what comes next in: {context[:500]}...\nReasoning:"
+            elif strategy == "hint":
+                prompt = f"What hints would help understand this text: {context[:500]}...\nHints:"
+            elif strategy == "mixed":
+                # Randomly choose strategy for each context individually
+                strategies = ["summary", "cot", "hint"]
+                chosen = random.choice(strategies)
+                if chosen == "summary":
+                    prompt = f"Summarize the key ideas and next logical steps for: {context[:500]}...\nSummary:"
+                elif chosen == "cot":
+                    prompt = f"Think step by step about what comes next in: {context[:500]}...\nReasoning:"
+                else:  # hint
+                    prompt = f"What hints would help understand this text: {context[:500]}...\nHints:"
             else:
-                cycle_tag = ""
-
-            # 4) truncate context – include both prompt head and answer tail
-            head = ctx[: max_context_chars // 2]
-            tail = ctx[-max_context_chars // 2 :]
-            trimmed_ctx = f"{head} ... {tail}" if len(ctx) > max_context_chars else ctx
-
-            # 5) assemble final prompt
-            prompt = (
-                f"<PROMPT_BEGIN>{frame} {cycle_tag}\n\n"
-                f"<CONTEXT>\n{trimmed_ctx}\n</CONTEXT>\n\n"
-                f"<GUIDE>\n{guidance}\n\n"
-                f"• Output ≤100 tokens\n"
-                f"• Use comma-separated phrases, no full stops\n"
-                f"<REASONING>"
-            )
+                prompt = f"Analyze: {context[:500]}...\nAnalysis:"
+                
             prompts.append(prompt)
-
+        
         return prompts
     
     def generate_latents(
         self, 
         input_ids: torch.Tensor, 
         strategy: str = "mixed",
-        use_dummy: float = 0.1  # Dropout probability for using a dummy (zero) latent
+        use_dummy: float = 0.1  # Probability of using dummy latent
     ) -> torch.Tensor:
         """
         Generate reasoning latents from input context
@@ -171,52 +120,69 @@ class ReasoningLatentGenerator:
             latents: [batch, latent_dim] reasoning latents
         """
         batch_size = input_ids.shape[0]
+        print(f"🔍 DEBUG - generate_latents called with input_ids dtype: {input_ids.dtype}, shape: {input_ids.shape}")
         
         # Sometimes use dummy latents (zero vector) to handle no-hint scenarios
         if random.random() < use_dummy:
-            return torch.zeros(batch_size, self.latent_dim, device=self.device)
+            dummy_latents = torch.zeros(batch_size, self.latent_dim, device=self.device, dtype=torch.bfloat16)
+            dummy_latents = dummy_latents.to(torch.float32)  # Convert to float32 for interface compatibility
+            print(f"🔍 DEBUG - Using dummy latents with dtype: {dummy_latents.dtype}")
+            return dummy_latents
         
         # Convert LLaDA tokens to text
         contexts = []
         for i in range(batch_size):
-            # Use the full context as input for reasoning.
-            # Originally, only the first 70% of the context was used, possibly to focus the reasoning on the initial part of the input
-            # and avoid including answer tokens or trailing irrelevant information. However, using the full context may provide richer information
-            # for the reasoning latent, especially if the context is already trimmed or well-formed.
-            context_tokens = input_ids[i]
+            # Take first 70% of context as input for reasoning
+            context_length = int(input_ids.shape[1] * 0.7)
+            context_tokens = input_ids[i, :context_length]
             
             # Remove padding and special tokens
             context_tokens = context_tokens[context_tokens != self.llada_tokenizer.pad_token_id]
             context_text = self.llada_tokenizer.decode(context_tokens, skip_special_tokens=True)
             contexts.append(context_text)
-        # Generate reasoning prompts
-        reasoning_prompts = self.generate_reasoning_prompts(contexts, strategy=strategy)
         
-        # This section generates reasoning latents from the input contexts using a "thinker" model.
-        # 1. First, we tokenize the generated reasoning prompts using the thinker's tokenizer.
-        #    - We pad and truncate the prompts to a maximum length of 512 tokens.
-        #    - The resulting tokenized batch is moved to the target device (e.g., GPU).
+        # Generate reasoning prompts
+        reasoning_prompts = self.generate_reasoning_prompts(contexts, strategy)
+        print(f"🔍 DEBUG - Generated {len(reasoning_prompts)} reasoning prompts for {len(contexts)} contexts")
+        
+        # Tokenize for thinker
         thinker_inputs = self.thinker_tokenizer(
             reasoning_prompts,
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=400
+            max_length=512
         ).to(self.device)
+        print(f"🔍 DEBUG - Thinker input_ids shape: {thinker_inputs.input_ids.shape}")
         
-        # 2. Next, we use the thinker model to process these tokenized prompts.
-        #    - We disable gradient computation (no training here).
-        #    - The model returns hidden states for each layer; we take the last layer's hidden states.
-        #    - Shape: [batch, seq_len, hidden_size]
+        # Generate reasoning with thinker
         with torch.no_grad():
             thinker_outputs = self.thinker_model(**thinker_inputs, output_hidden_states=True)
-            last_hidden_states = thinker_outputs.hidden_states[-1]
+            # Get hidden states from last layer
+            last_hidden_states = thinker_outputs.hidden_states[-1]  # [batch, seq_len, hidden_size]
         
-        # 3. We then encode these last hidden states into a fixed-size latent vector for each input.
-        #    - The latent encoder projects the sequence of hidden states into a single [batch, latent_dim] vector.
-        latents = self.latent_encoder(last_hidden_states)
+        # DEBUG: Print dtypes during forward pass
+        print(f"🔍 DEBUG - Thinker output dtype: {last_hidden_states.dtype}")
+        print(f"🔍 DEBUG - Thinker output shape: {last_hidden_states.shape}")
+        print(f"🔍 DEBUG - About to pass to latent encoder...")
         
-        # 4. Return the resulting latents, which will be used as conditioning for the main model.
+        # Encode to latent space
+        try:
+            latents = self.latent_encoder(last_hidden_states)  # [batch, latent_dim]
+            print(f"🔍 DEBUG - Latent encoder output dtype: {latents.dtype}")
+            print(f"🔍 DEBUG - Latent encoder output shape: {latents.shape}")
+        except Exception as e:
+            print(f"❌ ERROR in latent encoder: {e}")
+            print(f"🔍 DEBUG - First few encoder layer dtypes:")
+            for i, layer in enumerate(self.latent_encoder.encoder[:3]):
+                if hasattr(layer, 'weight'):
+                    print(f"   Layer {i} ({type(layer).__name__}): {layer.weight.dtype}")
+            raise e
+        
+        # Convert to float32 for compatibility with main model 
+        # (FiLM adapters will auto-convert to match model dtype, but interface expects float32)
+        latents = latents.to(torch.float32)
+        print(f"🔍 DEBUG - Final output dtype: {latents.dtype}")
         return latents
 
 def forward_process(input_ids, eps=1e-3):
@@ -288,8 +254,6 @@ class MidTrainingPipeline:
         """
         Single training step with latent conditioning
         """
-        # This sets the LLaDA model and the latent encoder to training mode,
-        # enabling features like dropout and layer norm updates during training.
         self.llada_model.train()
         self.latent_generator.latent_encoder.train()
         
@@ -374,8 +338,8 @@ def run_mid_training():
     
     # Initialize pipeline
     pipeline = MidTrainingPipeline(
-        llada_path="./llada-8b",
-        thinker_path="./thinker",
+        llada_path="/data/sls/u/urop/mvideet/diffusion_reasoning/llada_8b",
+        thinker_path="/data/sls/u/urop/mvideet/diffusion_reasoning/thinker",
         latent_dim=256,
         device=device
     )
@@ -383,7 +347,7 @@ def run_mid_training():
     # Example training loop
     print("Starting mid-training with latent injection...")
     
-    for step in range(10000):  # 10K steps
+    for step in range(10000):  # Your 180B token training
         # Your data loading logic here
         # For example:
         batch = {
