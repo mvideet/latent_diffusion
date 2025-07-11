@@ -1,6 +1,0 @@
-Traceback (most recent call last):
-  File "/data/sls/u/urop/mvideet/diffusion_reasoning/Latent_Injection/sanity_check.py", line 16, in <module>
-    from mid_training import (
-  File "/data/sls/u/urop/mvideet/diffusion_reasoning/Latent_Injection/mid_training.py", line 11, in <module>
-    from custom_llada_with_film import LLaDAModelLMWithFiLM, load_film_model
-ModuleNotFoundError: No module named 'custom_llada_with_film'

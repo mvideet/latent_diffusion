@@ -1,9 +1,0 @@
-Loading checkpoint shards:   0%|          | 0/6 [00:00<?, ?it/s]Loading checkpoint shards:  17%|█▋        | 1/6 [00:01<00:05,  1.18s/it]Loading checkpoint shards:  33%|███▎      | 2/6 [00:01<00:03,  1.22it/s]Loading checkpoint shards:  50%|█████     | 3/6 [00:02<00:02,  1.06it/s]Loading checkpoint shards:  67%|██████▋   | 4/6 [00:03<00:02,  1.01s/it]Loading checkpoint shards:  83%|████████▎ | 5/6 [00:04<00:00,  1.12it/s]Loading checkpoint shards: 100%|██████████| 6/6 [00:05<00:00,  1.31it/s]Loading checkpoint shards: 100%|██████████| 6/6 [00:05<00:00,  1.16it/s]
-Traceback (most recent call last):
-  File "/data/sls/u/urop/mvideet/diffusion_reasoning/load_diffusion.py", line 327, in <module>
-    main()
-  File "/data/sls/u/urop/mvideet/diffusion_reasoning/load_diffusion.py", line 292, in main
-    averaged_logits = average_logits_across_problems(all_logits_list)
-  File "/data/sls/u/urop/mvideet/diffusion_reasoning/load_diffusion.py", line 252, in average_logits_across_problems
-    stacked_logits = torch.stack(step_logits, dim=0)  # (num_problems, batch, seq, vocab)
-RuntimeError: stack expects each tensor to be equal size, but got [1, 166, 126464] at entry 0 and [1, 158, 126464] at entry 1

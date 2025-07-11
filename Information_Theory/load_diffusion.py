@@ -7,6 +7,47 @@ import torch.nn.functional as F
 from transformers.models.auto.tokenization_auto import AutoTokenizer
 from transformers.models.auto.modeling_auto import AutoModel
 
+# Import safetensors for memory-efficient tensor saving
+from safetensors.torch import save_file, load_file
+
+
+def load_averaged_logits(filename="averaged_logit_trajectory.safetensors"):
+    """
+    Load averaged logits from safetensors format back to list of tensors
+    """
+    logits_dict = load_file(filename)
+    # Sort by step number to maintain order
+    sorted_keys = sorted(logits_dict.keys(), key=lambda x: int(x.split('_')[1]))
+    return [logits_dict[key] for key in sorted_keys]
+
+
+def load_all_problem_logits(filename="all_problems_logits.safetensors"):
+    """
+    Load all problem logits from safetensors format back to nested list structure
+    """
+    logits_dict = load_file(filename)
+    
+    # Group by problem and step
+    problems_dict = {}
+    for key, tensor in logits_dict.items():
+        parts = key.split('_')
+        problem_idx = int(parts[1])
+        step_idx = int(parts[3])
+        
+        if problem_idx not in problems_dict:
+            problems_dict[problem_idx] = {}
+        problems_dict[problem_idx][step_idx] = tensor
+    
+    # Convert back to nested list structure
+    all_logits_list = []
+    for problem_idx in sorted(problems_dict.keys()):
+        problem_logits = []
+        for step_idx in sorted(problems_dict[problem_idx].keys()):
+            problem_logits.append(problems_dict[problem_idx][step_idx])
+        all_logits_list.append(problem_logits)
+    
+    return all_logits_list
+
 
 def add_gumbel_noise(logits, temperature):
     '''
@@ -159,16 +200,16 @@ def run_multiple_problems(model, tokenizer, device, num_problems=10):
     print("Using 10 sample math problems...")
     # Use sample problems directly (no dataset loading)
     test_problems = [
-        {"question": "Lily can run 12 kilometers per hour for 4 hours. After that, she runs 6 kilometers per hour. How many kilometers can she run in 8 hours?", "answer": "72"},
-        {"question": "James has 30 candies. He gives 4 to his sister and eats 3 himself. How many candies does he have left?", "answer": "23"},
-        {"question": "A pizza has 8 slices. If 3 people want to share it equally, how many slices does each person get?", "answer": "2.67"},
-        {"question": "Sarah buys 5 notebooks for $3 each and 2 pens for $1 each. How much does she spend in total?", "answer": "17"},
-        {"question": "A train travels 60 miles per hour for 2 hours. How far does it travel?", "answer": "120"},
-        {"question": "Tom has 24 marbles. He gives away 8 marbles and then buys 12 more. How many marbles does he have now?", "answer": "28"},
-        {"question": "A box contains 48 cookies. If 6 people share them equally, how many cookies does each person get?", "answer": "8"},
-        {"question": "Maria saves $15 per week. How much money will she have saved after 4 weeks?", "answer": "60"},
-        {"question": "A rectangle has a length of 12 cm and width of 8 cm. What is its area?", "answer": "96"},
-        {"question": "Ben reads 25 pages per day. How many pages will he read in 6 days?", "answer": "150"}
+        {"question": "A factory produces widgets at a rate of x per hour and increases production by 5 widgets per hour every hour for 8 hours. If they produced 480 widgets total in those 8 hours, what was the initial production rate x?", "answer": "45"},
+        {"question": "In a bag of marbles, the ratio of red to blue marbles is 3:4. If 5 red marbles are removed and 10 blue marbles are added, the new ratio becomes 1:2. How many red marbles were originally in the bag?", "answer": "15"},
+        {"question": "A regular octagon is inscribed in a circle of radius 8 units. What is the area of the octagon?", "answer": "193.9"},
+        {"question": "The sum of three consecutive integers is 51 more than twice the smallest of the three integers. What is the largest of the three integers?", "answer": "35"},
+        {"question": "A train travels from city A to city B at 80 km/h and returns at 60 km/h. If the total journey takes 7 hours, what is the distance between cities A and B in kilometers?", "answer": "240"},
+        {"question": "In a geometric sequence, the sum of the first three terms is 26 and the product is 216. What is the second term of the sequence?", "answer": "6"},
+        {"question": "A box contains red, blue and green balls. The probability of drawing a red ball is 1/3, and the probability of drawing a blue ball is 1/4. If there are 24 balls in total, how many green balls are there?", "answer": "10"},
+        {"question": "The angles of a triangle are in arithmetic progression. The smallest angle is 20° less than the middle angle. What is the largest angle in degrees?", "answer": "80"},
+        {"question": "A rectangle has perimeter 30 units. If its area is 56 square units, what is the length of its diagonal?", "answer": "13"},
+        {"question": "If log_2(x) + log_2(x+3) = 5, what is the value of x?", "answer": "5"}
     ]
     
     # Limit to requested number of problems
@@ -201,22 +242,26 @@ def run_multiple_problems(model, tokenizer, device, num_problems=10):
         input_ids = torch.tensor(input_ids).to(device).unsqueeze(0)
         
         # Generate response
-        try:
-            out, problem_logits = generate(
+            # Generate with remasking - this means tokens with low confidence will be
+            # remasked and re-predicted during diffusion. This helps the model refine
+            # uncertain predictions by giving it multiple chances to predict difficult tokens.
+            # The 'low_confidence' strategy remasks tokens where the model's confidence 
+            # falls below an adaptive threshold based on the average confidence.
+        out, problem_logits = generate(
                 model, input_ids, 
-                steps=128, gen_length=128, block_length=32, 
-                temperature=0., cfg_scale=0., remasking='low_confidence'
+                steps=128, gen_length=256, block_length=16, 
+                temperature=0.1, cfg_scale=0., remasking='low_confidence'
             )
             
             # Decode the generated response
-            generated_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
-            print(f"Generated: {generated_text}")
+        generated_text = tokenizer.batch_decode(out[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
+        print(f"Generated: {generated_text}")
             
             # Store the logits for this problem
-            all_aggregated_logits.append(problem_logits)
+        all_aggregated_logits.append(problem_logits)
             
             # Store results
-            all_results.append({
+        all_results.append({
                 'problem_id': i+1,
                 'question': question,
                 'expected_answer': expected_answer,
@@ -224,10 +269,7 @@ def run_multiple_problems(model, tokenizer, device, num_problems=10):
                 'prompt_length': input_ids.shape[1]
             })
             
-        except Exception as e:
-            print(f"Error generating for problem {i+1}: {e}")
-            continue
-    
+        
     return all_aggregated_logits, all_results
 
 def average_logits_across_problems(all_logits_list):
@@ -288,14 +330,14 @@ def main():
         # Load the LLaDA model and tokenizer from local directory
         print("Loading LLaDA model...")
         model = AutoModel.from_pretrained(
-            "./llada-8b",
+            "/data/sls/u/urop/mvideet/diffusion_reasoning/llada_8b",
             trust_remote_code=True,
             torch_dtype=torch.bfloat16
         ).to(device).eval()
         
         print("Loading tokenizer...")
         tokenizer = AutoTokenizer.from_pretrained(
-            "./llada-8b",
+            "/data/sls/u/urop/mvideet/diffusion_reasoning/llada_8b",
             trust_remote_code=True,
         )
         print("Model and tokenizer loaded successfully!")
@@ -315,17 +357,25 @@ def main():
     # Average logits across all problems
     averaged_logits = average_logits_across_problems(all_logits_list)
     
-    # Save the averaged logits
+    # Save the averaged logits using safetensors (memory efficient)
     print(f"\nSaving averaged logits from {len(all_logits_list)} problems...")
-    torch.save(averaged_logits, "averaged_logit_trajectory.pt")
-    print(f"Saved averaged logits to 'averaged_logit_trajectory.pt'")
+    # Convert list of tensors to dictionary for safetensors
+    averaged_logits_dict = {f"step_{i}": tensor for i, tensor in enumerate(averaged_logits)}
+    save_file(averaged_logits_dict, "averaged_logit_trajectory.safetensors")
+    print(f"Saved averaged logits to 'averaged_logit_trajectory.safetensors'")
     
-    # Also save individual problem logits
-    torch.save(all_logits_list, "all_problems_logits.pt")
-    print(f"Saved all individual problem logits to 'all_problems_logits.pt'")
+    # Also save individual problem logits using safetensors
+    print(f"Saving individual problem logits...")
+    # Convert nested list to flat dictionary
+    all_logits_dict = {}
+    for problem_idx, problem_logits in enumerate(all_logits_list):
+        for step_idx, step_tensor in enumerate(problem_logits):
+            all_logits_dict[f"problem_{problem_idx}_step_{step_idx}"] = step_tensor
+    save_file(all_logits_dict, "all_problems_logits.safetensors")
+    print(f"Saved all individual problem logits to 'all_problems_logits.safetensors'")
     
-    # Save results summary
-    torch.save(results, "inference_results.pt")
+    # Save results summary (keep as torch.save since it's not tensors)
+    torch.save(results, "inference_results.pt", pickle_protocol=4)
     print(f"Saved inference results to 'inference_results.pt'")
     
     # Print summary
@@ -344,7 +394,11 @@ def main():
         print(f"Expected: {result['expected_answer']}")
         print(f"Generated: {result['generated_answer'][:60]}...")
         
-    print(f"\nUse 'averaged_logit_trajectory.pt' for analysis with plot_logits.py")
+    print(f"\nUse 'averaged_logit_trajectory.safetensors' for analysis with plot_logits.py")
+    print(f"📋 To load saved data:")
+    print(f"   averaged_logits = load_averaged_logits()")
+    print(f"   all_logits = load_all_problem_logits()")
+    print(f"   results = torch.load('inference_results.pt')")
 
 
 if __name__ == '__main__':

@@ -16,9 +16,9 @@
 # source /data/sls/scratch/mvideet/anaconda3/etc/profile.d/conda.sh
 # conda activate diffusion_env
 
-MODEL_NAME="llada-8b"
+# MODEL_NAME="llada-8b"
 
-cd /data/sls/u/urop/mvideet/diffusion_reasoning
+cd /data/sls/u/urop/mvideet/diffusion_reasoning/Information_Theory
 
 # 2. Run your module with “-m src.run_vggsound” instead of calling the .py directly
 python -u load_diffusion.py

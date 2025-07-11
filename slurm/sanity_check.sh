@@ -6,10 +6,10 @@
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
 #SBATCH --requeue
-#SBATCH --partition=a5,a6
-##SBATCH --partition=a5,a6,2080
+#SBATCH --partition=a6
+##SBATCH --partition=a5,a6
 #SBATCH --exclude sls-a6-5
-#SBATCH --mem=22G
+#SBATCH --mem=30G
 #SBATCH --ntasks-per-node=1
 
 # PYTHON_VIRTUAL_ENVIRONMENT=diffusion_env

@@ -1,9 +1,0 @@
-Loading checkpoint shards:   0%|          | 0/6 [00:00<?, ?it/s]Loading checkpoint shards:  17%|█▋        | 1/6 [00:00<00:01,  3.20it/s]Loading checkpoint shards:  33%|███▎      | 2/6 [00:00<00:00,  4.90it/s]Loading checkpoint shards:  50%|█████     | 3/6 [00:00<00:00,  5.74it/s]Loading checkpoint shards:  67%|██████▋   | 4/6 [00:00<00:00,  6.41it/s]Loading checkpoint shards:  83%|████████▎ | 5/6 [00:00<00:00,  6.95it/s]Loading checkpoint shards: 100%|██████████| 6/6 [00:00<00:00,  7.36it/s]Loading checkpoint shards: 100%|██████████| 6/6 [00:00<00:00,  6.31it/s]
-Traceback (most recent call last):
-  File "/data/sls/u/urop/mvideet/diffusion_reasoning/load_diffusion.py", line 327, in <module>
-    # Save results summary
-  File "/data/sls/u/urop/mvideet/diffusion_reasoning/load_diffusion.py", line 292, in main
-    trust_remote_code=True,
-  File "/data/sls/u/urop/mvideet/diffusion_reasoning/load_diffusion.py", line 252, in average_logits_across_problems
-    
-RuntimeError: stack expects each tensor to be equal size, but got [1, 166, 126464] at entry 0 and [1, 158, 126464] at entry 1

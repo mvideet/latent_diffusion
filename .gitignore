@@ -1,5 +1,6 @@
 # Exclude the embedded git repository
 LLaDA/
+slurm/
 
 # Python
 __pycache__/

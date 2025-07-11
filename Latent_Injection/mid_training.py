@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 from typing import Optional, List, Dict, Any
 import math
 import random
@@ -43,31 +43,73 @@ class ReasoningLatentGenerator:
     """
     Generate reasoning latents using the thinker model
     """
-    def __init__(self, thinker_path: str = "./thinker", latent_dim: int = 256, device: str = 'cuda'):
+    def __init__(self, thinker_path: str = "./thinker", latent_dim: int = 256, device: str = 'cuda', thinker_device: Optional[str] = None):
         self.device = device
         self.latent_dim = latent_dim
         
-        # Load thinker model and tokenizer
-        print("Loading thinker model...")
-        self.thinker_model = AutoModel.from_pretrained(
+        # Use separate device for thinker if specified, otherwise same as main device
+        self.thinker_device = thinker_device if thinker_device is not None else device
+        print(f"🧠 Thinker model (frozen): {self.thinker_device}")
+        print(f"🎯 LLaDA + Latent Encoder (trainable): {self.device}")
+        if self.thinker_device != self.device:
+            print(f"🔄 Cross-GPU setup: Thinker outputs will be transferred to main device")
+        
+        # Load thinker model and tokenizer on separate device
+        print(f"Loading thinker model on {self.thinker_device}...")
+        self.thinker_model = AutoModelForCausalLM.from_pretrained(
             thinker_path,
             torch_dtype=torch.bfloat16,
             trust_remote_code=True
-        ).to(device).eval()
+        ).to(self.thinker_device).eval()
         
         self.thinker_tokenizer = AutoTokenizer.from_pretrained(thinker_path)
         if self.thinker_tokenizer.pad_token is None:
             self.thinker_tokenizer.pad_token = self.thinker_tokenizer.eos_token
+        
+        # DEBUG: Verify thinker model is working
+        print(f"🔍 THINKER MODEL VERIFICATION")
+        print(f"   Model type: {type(self.thinker_model)}")
+        print(f"   Config: {self.thinker_model.config}")
+        print(f"   Vocab size: {self.thinker_model.config.vocab_size}")
+        try:
+            print(f"   Hidden size: {self.thinker_model.config.hidden_size}")
+        except:
+            print(f"   Hidden size: {getattr(self.thinker_model.config, 'd_model', 'unknown')}")
+        
+        # Test with a simple prompt
+        test_prompt = "The capital of France is"
+        test_inputs = self.thinker_tokenizer(test_prompt, return_tensors="pt").to(self.thinker_device)
+        print(f"   Test prompt: '{test_prompt}'")
+        print(f"   Test input ids: {test_inputs.input_ids}")
+        
+        with torch.no_grad():
+            # Try proper generation instead of argmax
+            test_outputs = self.thinker_model.generate(
+                **test_inputs,
+                max_new_tokens=20,
+                do_sample=False,  # Deterministic for testing
+                pad_token_id=self.thinker_tokenizer.eos_token_id
+            )
+            test_decoded = self.thinker_tokenizer.decode(test_outputs[0], skip_special_tokens=True)
+            print(f"   Test output: '{test_decoded}'")
             
-        # Initialize latent encoder (match thinker model dtype)
+            # Also test the raw forward pass
+            raw_outputs = self.thinker_model(**test_inputs)
+            raw_decoded = self.thinker_tokenizer.decode(raw_outputs.logits.argmax(dim=-1)[0], skip_special_tokens=True)
+            print(f"   Raw argmax: '{raw_decoded}'")
+        print(f"🔍 END THINKER VERIFICATION")
+            
+        # Initialize latent encoder on MAIN device (for gradient updates with LLaDA model)
         self.latent_encoder = LatentEncoder(
             thinker_hidden_size=2560,  # Phi-2 hidden size
             latent_dim=latent_dim
-        ).to(device).to(torch.bfloat16)  # Convert to match thinker model dtype
+        ).to(self.device).to(torch.bfloat16)  # Keep on main device for training
         
-        # DEBUG: Print model dtypes after initialization
-        print(f"🔍 DEBUG - Thinker model dtype: {next(self.thinker_model.parameters()).dtype}")
-        print(f"🔍 DEBUG - Latent encoder dtype: {next(self.latent_encoder.parameters()).dtype}")
+        # DEBUG: Print model dtypes and devices after initialization
+        thinker_param = next(self.thinker_model.parameters())
+        encoder_param = next(self.latent_encoder.parameters())
+        print(f"🔍 DEBUG - Thinker model: {thinker_param.dtype} on {thinker_param.device}")
+        print(f"🔍 DEBUG - Latent encoder: {encoder_param.dtype} on {encoder_param.device}")
         
         # Load LLaDA tokenizer for context preparation
         self.llada_tokenizer = AutoTokenizer.from_pretrained("/data/sls/u/urop/mvideet/diffusion_reasoning/llada_8b", trust_remote_code=True)
@@ -124,8 +166,8 @@ class ReasoningLatentGenerator:
         
         # Sometimes use dummy latents (zero vector) to handle no-hint scenarios
         if random.random() < use_dummy:
-            dummy_latents = torch.zeros(batch_size, self.latent_dim, device=self.device, dtype=torch.bfloat16)
-            dummy_latents = dummy_latents.to(torch.float32)  # Convert to float32 for interface compatibility
+            # Create dummy latents directly in float32 to avoid gradient-breaking dtype conversion
+            dummy_latents = torch.zeros(batch_size, self.latent_dim, device=self.device, dtype=torch.float32, requires_grad=True)
             print(f"🔍 DEBUG - Using dummy latents with dtype: {dummy_latents.dtype}")
             return dummy_latents
         
@@ -145,44 +187,67 @@ class ReasoningLatentGenerator:
         reasoning_prompts = self.generate_reasoning_prompts(contexts, strategy)
         print(f"🔍 DEBUG - Generated {len(reasoning_prompts)} reasoning prompts for {len(contexts)} contexts")
         
-        # Tokenize for thinker
+        # Tokenize for thinker (move to thinker device)
         thinker_inputs = self.thinker_tokenizer(
             reasoning_prompts,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=512
-        ).to(self.device)
+        ).to(self.thinker_device)
         print(f"🔍 DEBUG - Thinker input_ids shape: {thinker_inputs.input_ids.shape}")
         
-        # Generate reasoning with thinker
+        # Generate reasoning with thinker (on thinker device)
         with torch.no_grad():
             thinker_outputs = self.thinker_model(**thinker_inputs, output_hidden_states=True)
             # Get hidden states from last layer
-            last_hidden_states = thinker_outputs.hidden_states[-1]  # [batch, seq_len, hidden_size]
+            last_hidden_states = thinker_outputs.hidden_states[-1]
+            
+            # DEBUG: Use proper generation instead of broken argmax
+            print(f"🔍 DEBUG - Testing thinker generation...")
+            debug_outputs = self.thinker_model.generate(
+                **thinker_inputs,
+                max_new_tokens=50,
+                do_sample=True,
+                temperature=0.7,
+                pad_token_id=self.thinker_tokenizer.eos_token_id
+            )
+            thinker_decoded = self.thinker_tokenizer.batch_decode(debug_outputs, skip_special_tokens=True)
+            print(f"🔍 DEBUG - Thinker generated output:")
+            for i, (prompt, output) in enumerate(zip(reasoning_prompts[:2], thinker_decoded[:2])):
+                print(f"   Input {i+1}: {prompt[:100]}...")
+                print(f"   Output {i+1}: {output}")
+                print("-" * 40)
+        # print(f"🔍 DEBUG - Thinker output dtype: {last_hidden_states.dtype}, device: {last_hidden_states.device}")
+        # print(f"🔍 DEBUG - Thinker output shape: {last_hidden_states.shape}")
         
-        # DEBUG: Print dtypes during forward pass
-        print(f"🔍 DEBUG - Thinker output dtype: {last_hidden_states.dtype}")
-        print(f"🔍 DEBUG - Thinker output shape: {last_hidden_states.shape}")
-        print(f"🔍 DEBUG - About to pass to latent encoder...")
+        # Transfer thinker output to main device for latent encoder
+        if last_hidden_states.device != self.device:
+            print(f"🔄 Transferring thinker output: {last_hidden_states.device} → {self.device}")
+            last_hidden_states = last_hidden_states.to(self.device)
         
-        # Encode to latent space
+        # print(f"🔍 DEBUG - About to pass to latent encoder on {self.device}...")
+        
+        # Encode to latent space (on main device)
         try:
             latents = self.latent_encoder(last_hidden_states)  # [batch, latent_dim]
-            print(f"🔍 DEBUG - Latent encoder output dtype: {latents.dtype}")
+            print(f"🔍 DEBUG - Latent encoder output dtype: {latents.dtype}, device: {latents.device}")
             print(f"🔍 DEBUG - Latent encoder output shape: {latents.shape}")
         except Exception as e:
-            print(f"❌ ERROR in latent encoder: {e}")
-            print(f"🔍 DEBUG - First few encoder layer dtypes:")
+            # print(f"❌ ERROR in latent encoder: {e}")
+            # print(f"🔍 DEBUG - Input device: {last_hidden_states.device}, encoder device: {next(self.latent_encoder.parameters()).device}")
+            # print(f"🔍 DEBUG - First few encoder layer dtypes:")
             for i, layer in enumerate(self.latent_encoder.encoder[:3]):
                 if hasattr(layer, 'weight'):
-                    print(f"   Layer {i} ({type(layer).__name__}): {layer.weight.dtype}")
+                    print(f"   Layer {i} ({type(layer).__name__}): {layer.weight.dtype}, device: {layer.weight.device}")
             raise e
         
         # Convert to float32 for compatibility with main model 
-        # (FiLM adapters will auto-convert to match model dtype, but interface expects float32)
-        latents = latents.to(torch.float32)
-        print(f"🔍 DEBUG - Final output dtype: {latents.dtype}")
+        # (latents are already on main device, FiLM adapters will auto-convert to match model dtype)
+        # Use dtype conversion that preserves gradients
+        if latents.dtype != torch.float32:
+            latents = latents.float()  # .float() preserves gradients unlike .to(torch.float32)
+        print(f"🔍 DEBUG - Final output dtype: {latents.dtype}, device: {latents.device}")
         return latents
 
 def forward_process(input_ids, eps=1e-3):
@@ -206,18 +271,19 @@ class MidTrainingPipeline:
         llada_path: str = "./llada-8b",
         thinker_path: str = "./thinker", 
         latent_dim: int = 256,
-        device: str = 'cuda'
+        device: str = 'cuda',
+        thinker_device: Optional[str] = None
     ):
         self.device = device
         self.latent_dim = latent_dim
         
-        # Load FiLM-enabled LLaDA model
+        # Load FiLM-enabled LLaDA model on main device
         print("Loading LLaDA model with FiLM adapters...")
         self.llada_model = load_film_model(llada_path, latent_dim, device)
         
-        # Initialize reasoning latent generator
+        # Initialize reasoning latent generator (potentially on separate device)
         print("Setting up reasoning latent generator...")
-        self.latent_generator = ReasoningLatentGenerator(thinker_path, latent_dim, device)
+        self.latent_generator = ReasoningLatentGenerator(thinker_path, latent_dim, device, thinker_device)
         
         # Setup optimizer (only train FiLM adapters and latent encoder)
         self.setup_optimizer()
@@ -266,12 +332,12 @@ class MidTrainingPipeline:
             input_ids = input_ids[:, :random_length]
         
         # Generate reasoning latents from context
-        with torch.no_grad():
-            reasoning_latents = self.latent_generator.generate_latents(
-                input_ids, 
-                strategy="mixed",
-                use_dummy=0.1  # 10% chance of no-hint scenario
-            )
+        # IMPORTANT: Remove no_grad to allow gradients to flow back to latent encoder
+        reasoning_latents = self.latent_generator.generate_latents(
+            input_ids, 
+            strategy="mixed",
+            use_dummy=0.1  # 10% chance of no-hint scenario
+        )
         
         # Apply diffusion forward process (your existing masking)
         noisy_batch, masked_indices, p_mask = forward_process(input_ids)
